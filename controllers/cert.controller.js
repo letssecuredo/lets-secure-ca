@@ -13,13 +13,13 @@ const {
   verifyChallenge,
   markChallengeUsed,
 } = require("../services/challengeService");
+const { isDomainPreVerified } = require("../services/verifiedDomainService");
 const { getRootCA } = require("../services/caService");
 const { logAction } = require("../services/auditService");
 const { AuditAction } = require("../models/schemas");
-const { logger } = require("../utils/logger");
 
 /* ==========================================================
-   STEP 1: REQUEST CERT → CREATE CHALLENGE
+   REQUEST CERT (with auto pre-verified check)
    ========================================================== */
 
 async function requestCert(req, res, next) {
@@ -27,6 +27,33 @@ async function requestCert(req, res, next) {
     const { owner, project, domain, email } = req.validated;
     const method = String(req.body.method || "dns-01").toLowerCase();
 
+    /* ---------- Step 1: Is the domain pre-verified by admin? ---------- */
+    const preVerified = await isDomainPreVerified(domain);
+    if (preVerified) {
+      const cert = await issueNewCertificate({ owner, project, domain, email });
+
+      await logAction({
+        action: AuditAction.CERT_CREATED,
+        actor: "public",
+        target: cert.certId,
+        ip: req.ip,
+        userAgent: req.headers["user-agent"],
+        success: true,
+        meta: { domain, email, preVerified: preVerified.pattern },
+      });
+
+      return res.status(201).json({
+        valid: true,
+        status: "issued",
+        preVerified: true,
+        preVerifiedPattern: preVerified.pattern,
+        certificate: cert.jsonPayload,
+        downloadUrl: `/api/cert/${cert.certId}`,
+        jsonUrl: `/api/cert/${cert.certId}/json`,
+      });
+    }
+
+    /* ---------- Step 2: Standard challenge flow ---------- */
     const challenge = await createChallenge({
       owner,
       project,
@@ -36,7 +63,7 @@ async function requestCert(req, res, next) {
     });
 
     await logAction({
-      action: "CHALLENGE_CREATED",
+      action: AuditAction.CHALLENGE_CREATED,
       actor: "public",
       target: challenge.id,
       ip: req.ip,
@@ -55,6 +82,8 @@ async function requestCert(req, res, next) {
         method: challenge.method,
         token: challenge.token,
         status: challenge.status,
+        attempts: 0,
+        lastError: null,
         expiresAt: challenge.expiresAt,
         verifyUrl: `/api/verify-challenge/${challenge.id}`,
         statusUrl: `/api/challenge/${challenge.id}`,
@@ -74,6 +103,13 @@ async function requestCert(req, res, next) {
         path: challenge.filePath,
         content: challenge.fileContent,
       };
+    } else if (method === "tls-alpn-01") {
+      response.challenge.tlsAlpn = {
+        certPemUrl: `/api/challenge/${challenge.id}/provision-cert`,
+        keyPemUrl: `/api/challenge/${challenge.id}/provision-key`,
+        alpnProtocol: "acme-tls/1",
+        port: 443,
+      };
     }
 
     res.status(202).json(response);
@@ -83,7 +119,7 @@ async function requestCert(req, res, next) {
 }
 
 /* ==========================================================
-   STEP 2: GET CHALLENGE STATUS
+   CHALLENGE STATUS
    ========================================================== */
 
 async function getChallengeStatus(req, res, next) {
@@ -113,14 +149,13 @@ async function getChallengeStatus(req, res, next) {
 }
 
 /* ==========================================================
-   STEP 3: VERIFY CHALLENGE AND ISSUE CERTIFICATE
+   VERIFY CHALLENGE → ISSUE CERT
    ========================================================== */
 
 async function verifyChallengeAndIssue(req, res, next) {
   try {
     const challenge = await verifyChallenge(req.params.id);
 
-    // Issue the certificate
     const cert = await issueNewCertificate({
       owner: challenge.owner,
       project: challenge.project,
@@ -131,18 +166,13 @@ async function verifyChallengeAndIssue(req, res, next) {
     await markChallengeUsed(challenge.id);
 
     await logAction({
-      action: AuditAction.CERT_CREATED,
+      action: AuditAction.CHALLENGE_VERIFIED,
       actor: "public",
-      target: cert.certId,
+      target: challenge.id,
       ip: req.ip,
       userAgent: req.headers["user-agent"],
       success: true,
-      meta: {
-        domain: challenge.domain,
-        email: challenge.email,
-        challengeId: challenge.id,
-        method: challenge.method,
-      },
+      meta: { certId: cert.certId, method: challenge.method },
     });
 
     res.status(201).json({
@@ -152,6 +182,73 @@ async function verifyChallengeAndIssue(req, res, next) {
       downloadUrl: `/api/cert/${cert.certId}`,
       jsonUrl: `/api/cert/${cert.certId}/json`,
     });
+  } catch (err) {
+    // Fire-and-forget audit log of failure
+    try {
+      await logAction({
+        action: AuditAction.CHALLENGE_FAILED,
+        actor: "public",
+        target: req.params.id,
+        ip: req.ip,
+        userAgent: req.headers["user-agent"],
+        success: false,
+        meta: { reason: err.message },
+      });
+    } catch {}
+    next(err);
+  }
+}
+
+/* ==========================================================
+   TLS-ALPN PROVISIONING FILES
+   ========================================================== */
+
+async function downloadProvisioningCert(req, res, next) {
+  try {
+    const challenge = await getChallengeById(req.params.id);
+    if (!challenge || challenge.method !== "tls-alpn-01") {
+      return res.status(404).json({ valid: false, error: "Not a TLS-ALPN-01 challenge" });
+    }
+    if (!challenge.provisionCertPem) {
+      return res.status(404).json({ valid: false, error: "Provisioning cert not available" });
+    }
+
+    await logAction({
+      action: AuditAction.PROVISION_CERT_DOWNLOADED,
+      actor: "public",
+      target: challenge.id,
+      ip: req.ip,
+      userAgent: req.headers["user-agent"],
+      success: true,
+    });
+
+    res.setHeader("Content-Type", "application/x-pem-file");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${challenge.domain}-provision.crt.pem"`
+    );
+    res.send(challenge.provisionCertPem);
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function downloadProvisioningKey(req, res, next) {
+  try {
+    const challenge = await getChallengeById(req.params.id);
+    if (!challenge || challenge.method !== "tls-alpn-01") {
+      return res.status(404).json({ valid: false, error: "Not a TLS-ALPN-01 challenge" });
+    }
+    if (!challenge.provisionKeyPem) {
+      return res.status(404).json({ valid: false, error: "Provisioning key not available" });
+    }
+
+    res.setHeader("Content-Type", "application/x-pem-file");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${challenge.domain}-provision.key.pem"`
+    );
+    res.send(challenge.provisionKeyPem);
   } catch (err) {
     next(err);
   }
@@ -308,6 +405,8 @@ module.exports = {
   requestCert,
   getChallengeStatus,
   verifyChallengeAndIssue,
+  downloadProvisioningCert,
+  downloadProvisioningKey,
   verifyCert,
   statusCert,
   downloadCert,
