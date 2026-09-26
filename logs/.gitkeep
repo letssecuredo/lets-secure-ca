@@ -1,0 +1,2 @@
+# Keeps the logs/ directory in git.
+# All logs are streamed to stdout for Render log capture.
