@@ -15,11 +15,8 @@ const DOMAIN_RE =
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 const CERT_ID_RE = /^LS-[A-F0-9]{8}$/;
+const CHALLENGE_ID_RE = /^CH-[A-F0-9]{12}$/;
 
-/**
- * Strip control chars and HTML angle brackets to prevent log/HTML injection.
- * Not a replacement for parameterized queries — Firestore is safe by design.
- */
 function sanitize(input) {
   if (typeof input !== "string") return "";
   return input
@@ -39,6 +36,7 @@ module.exports = {
   DOMAIN_RE,
   EMAIL_RE,
   CERT_ID_RE,
+  CHALLENGE_ID_RE,
   sanitize,
   isProd,
 };
