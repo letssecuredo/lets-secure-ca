@@ -1,14 +1,22 @@
 "use strict";
 
-/**
- * Canonical Firestore document shapes.
- * PEM content is stored inline (base64 is unnecessary — PEM is already ASCII).
- */
-
 const CertStatus = Object.freeze({
   ACTIVE: "active",
   REVOKED: "revoked",
   EXPIRED: "expired",
+});
+
+const ChallengeStatus = Object.freeze({
+  PENDING: "pending",
+  VERIFIED: "verified",
+  USED: "used",
+  EXPIRED: "expired",
+});
+
+const ChallengeMethod = Object.freeze({
+  DNS_01: "dns-01",
+  HTTP_01: "http-01",
+  TLS_ALPN_01: "tls-alpn-01",
 });
 
 const AuditAction = Object.freeze({
@@ -20,12 +28,14 @@ const AuditAction = Object.freeze({
   CERT_DOWNLOADED: "CERT_DOWNLOADED",
   CERT_REVOKED: "CERT_REVOKED",
   CERT_DELETED: "CERT_DELETED",
+  CHALLENGE_CREATED: "CHALLENGE_CREATED",
+  CHALLENGE_VERIFIED: "CHALLENGE_VERIFIED",
+  CHALLENGE_FAILED: "CHALLENGE_FAILED",
+  PROVISION_CERT_DOWNLOADED: "PROVISION_CERT_DOWNLOADED",
+  VERIFIED_DOMAIN_ADDED: "VERIFIED_DOMAIN_ADDED",
+  VERIFIED_DOMAIN_REMOVED: "VERIFIED_DOMAIN_REMOVED",
 });
 
-/**
- * certificates/{certId}
- * — Full PEM is stored inline. No Storage dependency.
- */
 function buildCertificateDocument(input) {
   return {
     certId: input.certId,
@@ -45,19 +55,12 @@ function buildCertificateDocument(input) {
     revocationReason: null,
     algorithm: "sha256WithRSA",
     keySize: 2048,
-
-    // Inline certificate material
     leafCertPem: input.leafCertPem,
     caCertPem: input.caCertPem,
-
-    // Inline public JSON blob (same shape as the API response)
     jsonPayload: input.jsonPayload,
   };
 }
 
-/**
- * users/{uid}
- */
 function buildUserDocument({ email, passwordHash, role = "admin" }) {
   return {
     email,
@@ -68,9 +71,6 @@ function buildUserDocument({ email, passwordHash, role = "admin" }) {
   };
 }
 
-/**
- * revocations/{certId}
- */
 function buildRevocationDocument({ certId, serialNumber, domain, reason }) {
   return {
     certId,
@@ -81,9 +81,6 @@ function buildRevocationDocument({ certId, serialNumber, domain, reason }) {
   };
 }
 
-/**
- * audit_logs/{auto}
- */
 function buildAuditLog({ action, actor, target, meta, ip, userAgent, success }) {
   return {
     action,
@@ -97,9 +94,6 @@ function buildAuditLog({ action, actor, target, meta, ip, userAgent, success }) 
   };
 }
 
-/**
- * system/root-ca
- */
 function buildRootCADocument({
   subject,
   certPem,
@@ -121,12 +115,23 @@ function buildRootCADocument({
   };
 }
 
+function buildVerifiedDomainDocument({ pattern, createdBy }) {
+  return {
+    pattern,
+    createdBy,
+    createdAt: new Date().toISOString(),
+  };
+}
+
 module.exports = {
   CertStatus,
+  ChallengeStatus,
+  ChallengeMethod,
   AuditAction,
   buildCertificateDocument,
   buildUserDocument,
   buildRevocationDocument,
   buildAuditLog,
   buildRootCADocument,
+  buildVerifiedDomainDocument,
 };
