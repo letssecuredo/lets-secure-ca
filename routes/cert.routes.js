@@ -13,6 +13,8 @@ const {
 
 const {
   requestCert,
+  getChallengeStatus,
+  verifyChallengeAndIssue,
   verifyCert,
   statusCert,
   downloadCert,
@@ -22,15 +24,33 @@ const {
 } = require("../controllers/cert.controller");
 const { getCertificateByDomain } = require("../services/certService");
 
-/* ---------- Spec endpoints ---------- */
+/* ==========================================================
+   DOMAIN VERIFICATION FLOW (new)
+   ========================================================== */
+
+// Step 1: Request a certificate → returns a challenge (DNS TXT or HTTP file)
 router.post("/request-cert", issueLimiter, validateRequestCert, requestCert);
+
+// Step 2: Get challenge status (poll for the frontend)
+router.get("/challenge/:id", getChallengeStatus);
+
+// Step 3: Verify the challenge → issues the certificate if the challenge passes
+router.post("/verify-challenge/:id", verifyChallengeAndIssue);
+
+/* ==========================================================
+   CERTIFICATE OPERATIONS
+   ========================================================== */
+
 router.post("/verify-cert", validateVerifyCert, verifyCert);
 router.get("/status/:id", validateCertIdParam, statusCert);
 router.get("/cert/:id", validateCertIdParam, downloadCert);
 router.get("/cert/:id/json", validateCertIdParam, downloadCertJson);
 router.get("/root-ca.pem", rootCertPublic);
 
-/* ---------- Frontend-compatible aliases ---------- */
+/* ==========================================================
+   FRONTEND-COMPATIBLE ALIASES
+   ========================================================== */
+
 router.post("/certificates", issueLimiter, validateRequestCert, requestCert);
 router.get("/certificates/:id", validateCertIdParam, publicCertLookup);
 router.get(
