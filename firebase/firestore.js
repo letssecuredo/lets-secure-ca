@@ -15,7 +15,6 @@ function initFirestore() {
         clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
         privateKey: (process.env.FIREBASE_PRIVATE_KEY || "").replace(/\\n/g, "\n"),
       }),
-      // No storageBucket — we don't use Firebase Storage.
     });
   }
 
@@ -37,9 +36,10 @@ const COLLECTIONS = Object.freeze({
   certificates: "certificates",
   users: "users",
   revocations: "revocations",
-  audit_logs: "audit_logs",
+  auditLogs: "audit_logs",
   system: "system",
   challenges: "challenges",
+  verifiedDomains: "verified_domains",
 });
 
 module.exports = { initFirestore, getDb, COLLECTIONS };
