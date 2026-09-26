@@ -4,28 +4,39 @@ const {
   DOMAIN_RE,
   EMAIL_RE,
   CERT_ID_RE,
+  CHALLENGE_ID_RE,
   sanitize,
 } = require("../utils/helpers");
+
+const VALID_METHODS = ["dns-01", "http-01", "tls-alpn-01"];
 
 function validateRequestCert(req, res, next) {
   const body = req.body || {};
 
   const owner = sanitize(body.owner);
   const project = sanitize(body.project);
-  const domain = sanitize(body.domain).toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+  const domain = sanitize(body.domain)
+    .toLowerCase()
+    .replace(/^https?:\/\//, "")
+    .replace(/\/.*$/, "");
   const email = sanitize(body.email).toLowerCase();
+  const method = String(body.method || "dns-01").toLowerCase().trim();
 
   const errors = [];
-  if (!owner || owner.length < 2 || owner.length > 120) errors.push("owner is required (2-120 chars)");
-  if (!project || project.length < 2 || project.length > 120) errors.push("project is required (2-120 chars)");
+  if (!owner || owner.length < 2 || owner.length > 120)
+    errors.push("owner is required (2-120 chars)");
+  if (!project || project.length < 2 || project.length > 120)
+    errors.push("project is required (2-120 chars)");
   if (!domain || !DOMAIN_RE.test(domain)) errors.push("domain is invalid");
   if (!email || !EMAIL_RE.test(email)) errors.push("email is invalid");
+  if (!VALID_METHODS.includes(method))
+    errors.push("method must be one of: " + VALID_METHODS.join(", "));
 
   if (errors.length) {
     return res.status(400).json({ valid: false, error: errors.join("; ") });
   }
 
-  req.validated = { owner, project, domain, email };
+  req.validated = { owner, project, domain, email, method };
   next();
 }
 
@@ -38,7 +49,9 @@ function validateVerifyCert(req, res, next) {
     return res.status(400).json({ valid: false, error: "Provide certId or certPem" });
   }
   if (certId && !CERT_ID_RE.test(certId)) {
-    return res.status(400).json({ valid: false, error: "certId format invalid (expected LS-XXXXXXXX)" });
+    return res
+      .status(400)
+      .json({ valid: false, error: "certId format invalid (expected LS-XXXXXXXX)" });
   }
   if (pem) {
     if (typeof pem !== "string") {
@@ -48,7 +61,10 @@ function validateVerifyCert(req, res, next) {
     if (pem.length < 100 || pem.length > 20000) {
       return res.status(400).json({ valid: false, error: "certPem length out of range" });
     }
-    if (!pem.includes("-----BEGIN CERTIFICATE-----") || !pem.includes("-----END CERTIFICATE-----")) {
+    if (
+      !pem.includes("-----BEGIN CERTIFICATE-----") ||
+      !pem.includes("-----END CERTIFICATE-----")
+    ) {
       return res.status(400).json({ valid: false, error: "certPem is not a valid PEM block" });
     }
   }
@@ -63,6 +79,15 @@ function validateCertIdParam(req, res, next) {
     return res.status(400).json({ valid: false, error: "Invalid certificate ID format" });
   }
   req.certId = id;
+  next();
+}
+
+function validateChallengeIdParam(req, res, next) {
+  const id = String(req.params.id || "").toUpperCase();
+  if (!CHALLENGE_ID_RE.test(id)) {
+    return res.status(400).json({ valid: false, error: "Invalid challenge ID format" });
+  }
+  req.challengeId = id;
   next();
 }
 
@@ -84,7 +109,9 @@ function validateLogin(req, res, next) {
     return res.status(400).json({ valid: false, error: "Invalid email" });
   }
   if (!password || password.length < 8 || password.length > 256) {
-    return res.status(400).json({ valid: false, error: "Password must be 8-256 characters" });
+    return res
+      .status(400)
+      .json({ valid: false, error: "Password must be 8-256 characters" });
   }
 
   req.validated = { email, password };
@@ -95,6 +122,7 @@ module.exports = {
   validateRequestCert,
   validateVerifyCert,
   validateCertIdParam,
+  validateChallengeIdParam,
   validateDomainParam,
   validateLogin,
 };
