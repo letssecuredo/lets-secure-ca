@@ -15,7 +15,6 @@ const { generalLimiter } = require("./middleware/rateLimitMiddleware");
 const { logger, morganStream } = require("./utils/logger");
 const { ensureAdminBootstrap } = require("./services/authService");
 const { initFirestore } = require("./firebase/firestore");
-const { initStorage } = require("./firebase/storage");
 
 const app = express();
 const PORT = process.env.PORT || 10000;
@@ -95,7 +94,6 @@ app.use(errorMiddleware);
 async function bootstrap() {
   try {
     initFirestore();
-    initStorage();
     await ensureAdminBootstrap();
 
     app.listen(PORT, () => {
