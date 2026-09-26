@@ -8,6 +8,7 @@ const {
   validateRequestCert,
   validateVerifyCert,
   validateCertIdParam,
+  validateChallengeIdParam,
   validateDomainParam,
 } = require("../middleware/validationMiddleware");
 
@@ -15,6 +16,8 @@ const {
   requestCert,
   getChallengeStatus,
   verifyChallengeAndIssue,
+  downloadProvisioningCert,
+  downloadProvisioningKey,
   verifyCert,
   statusCert,
   downloadCert,
@@ -25,17 +28,29 @@ const {
 const { getCertificateByDomain } = require("../services/certService");
 
 /* ==========================================================
-   DOMAIN VERIFICATION FLOW (new)
+   DOMAIN VERIFICATION FLOW
    ========================================================== */
 
-// Step 1: Request a certificate → returns a challenge (DNS TXT or HTTP file)
+// Step 1: Request a certificate → returns a challenge (or auto-issues if pre-verified)
 router.post("/request-cert", issueLimiter, validateRequestCert, requestCert);
 
-// Step 2: Get challenge status (poll for the frontend)
-router.get("/challenge/:id", getChallengeStatus);
+// Step 2: Poll challenge status
+router.get("/challenge/:id", validateChallengeIdParam, getChallengeStatus);
 
-// Step 3: Verify the challenge → issues the certificate if the challenge passes
-router.post("/verify-challenge/:id", verifyChallengeAndIssue);
+// Step 3: Verify challenge → issue certificate
+router.post("/verify-challenge/:id", validateChallengeIdParam, verifyChallengeAndIssue);
+
+// TLS-ALPN-01 provisioning files
+router.get(
+  "/challenge/:id/provision-cert",
+  validateChallengeIdParam,
+  downloadProvisioningCert
+);
+router.get(
+  "/challenge/:id/provision-key",
+  validateChallengeIdParam,
+  downloadProvisioningKey
+);
 
 /* ==========================================================
    CERTIFICATE OPERATIONS
