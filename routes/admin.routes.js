@@ -18,18 +18,41 @@ const {
   listAllCertificates,
   revokeCert,
   deleteCert,
+  listVerifiedDomainsHandler,
+  addVerifiedDomainHandler,
+  removeVerifiedDomainHandler,
   auditLogs,
 } = require("../controllers/admin.controller");
 
-/* Public */
+/* ---------- Public ---------- */
 router.post("/login", authLimiter, validateLogin, adminLogin);
 
-/* Admin-only */
+/* ---------- Admin-only: Root CA ---------- */
 router.post("/create-root-ca", authMiddleware, adminMiddleware, createRootCA);
 router.get("/root-ca", authMiddleware, adminMiddleware, getRootCAInfo);
+
+/* ---------- Admin-only: Certificates ---------- */
 router.get("/certificates", authMiddleware, adminMiddleware, listAllCertificates);
 router.post("/revoke-cert", authMiddleware, adminMiddleware, revokeCert);
-router.delete("/certificate/:id", authMiddleware, adminMiddleware, validateCertIdParam, deleteCert);
+router.delete(
+  "/certificate/:id",
+  authMiddleware,
+  adminMiddleware,
+  validateCertIdParam,
+  deleteCert
+);
+
+/* ---------- Admin-only: Pre-verified domains ---------- */
+router.get("/verified-domains", authMiddleware, adminMiddleware, listVerifiedDomainsHandler);
+router.post("/verified-domains", authMiddleware, adminMiddleware, addVerifiedDomainHandler);
+router.delete(
+  "/verified-domains/:id",
+  authMiddleware,
+  adminMiddleware,
+  removeVerifiedDomainHandler
+);
+
+/* ---------- Admin-only: Audit logs ---------- */
 router.get("/audit-logs", authMiddleware, adminMiddleware, auditLogs);
 
 module.exports = router;
