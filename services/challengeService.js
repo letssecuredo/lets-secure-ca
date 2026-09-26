@@ -4,11 +4,21 @@ const crypto = require("crypto");
 const dns = require("dns").promises;
 const http = require("http");
 const https = require("https");
+const tls = require("tls");
+const forge = require("node-forge");
 
 const { getDb, COLLECTIONS } = require("../firebase/firestore");
+const { ChallengeMethod, ChallengeStatus } = require("../models/schemas");
 const { logger } = require("../utils/logger");
 
 const CHALLENGE_TTL_MS = 60 * 60 * 1000; // 1 hour
+const DNS_TIMEOUT_MS = 15000;
+const HTTP_TIMEOUT_MS = 10000;
+const TLS_TIMEOUT_MS = 15000;
+
+/* ==========================================================
+   HELPERS
+   ========================================================== */
 
 function newChallengeToken() {
   return "ls-verify-" + crypto.randomBytes(16).toString("hex");
@@ -18,11 +28,20 @@ function newChallengeId() {
   return "CH-" + crypto.randomBytes(6).toString("hex").toUpperCase();
 }
 
+function generateRsaKeyPair(bits = 2048) {
+  return new Promise((resolve, reject) => {
+    forge.pki.rsa.generateKeyPair({ bits }, (err, keys) => {
+      if (err) reject(err);
+      else resolve(keys);
+    });
+  });
+}
+
 /* ==========================================================
-   CREATE
+   CREATE CHALLENGE
    ========================================================== */
 
-async function createChallenge({ domain, owner, project, email, method = "dns-01" }) {
+async function createChallenge({ domain, owner, project, email, method = ChallengeMethod.DNS_01 }) {
   const id = newChallengeId();
   const token = newChallengeToken();
 
@@ -34,7 +53,7 @@ async function createChallenge({ domain, owner, project, email, method = "dns-01
     email,
     token,
     method,
-    status: "pending",
+    status: ChallengeStatus.PENDING,
     createdAt: new Date().toISOString(),
     expiresAt: new Date(Date.now() + CHALLENGE_TTL_MS).toISOString(),
     verifiedAt: null,
@@ -45,21 +64,63 @@ async function createChallenge({ domain, owner, project, email, method = "dns-01
   };
 
   let record;
-  if (method === "dns-01") {
+
+  if (method === ChallengeMethod.DNS_01) {
     record = {
       ...base,
       recordName: `_letssecure-challenge.${domain}`,
       recordValue: token,
-      instructions: `Add a TXT record "${token}" at "_letssecure-challenge.${domain}" in your DNS provider.`,
+      instructions:
+        `Add a TXT record "${token}" at "_letssecure-challenge.${domain}" in your DNS provider, ` +
+        `wait 5–30 minutes for propagation, then click Verify Now.`,
     };
-  } else if (method === "http-01") {
+  } else if (method === ChallengeMethod.HTTP_01) {
     const path = `/.well-known/letssecure-challenge/${token}`;
     record = {
       ...base,
       filePath: path,
       fileUrl: `http://${domain}${path}`,
       fileContent: token,
-      instructions: `Create a file at "${path}" on your web server with the content "${token}".`,
+      instructions:
+        `Create a file at "${path}" on your web server (must be public on port 80) ` +
+        `with the exact content "${token}", then click Verify Now.`,
+    };
+  } else if (method === ChallengeMethod.TLS_ALPN_01) {
+    const keys = await generateRsaKeyPair(2048);
+    const cert = forge.pki.createCertificate();
+    cert.publicKey = keys.publicKey;
+    cert.serialNumber = crypto.randomBytes(16).toString("hex").toUpperCase();
+    cert.validity.notBefore = new Date();
+    cert.validity.notAfter = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+    const attrs = [{ name: "commonName", value: domain }];
+    cert.setSubject(attrs);
+    cert.setIssuer(attrs);
+    cert.setExtensions([
+      { name: "basicConstraints", cA: false, critical: true },
+      { name: "subjectAltName", altNames: [{ type: 2, value: domain }] },
+      {
+        name: "extensionRequest",
+        extensions: [
+          {
+            id: "1.3.6.1.5.5.7.1.31", // id-pe-acmeIdentifier (RFC 8737)
+            critical: true,
+            value: forge.util.createBuffer(token, "utf8").getBytes(),
+          },
+        ],
+      },
+    ]);
+    cert.sign(keys.privateKey, forge.md.sha256.create());
+
+    record = {
+      ...base,
+      alpnProtocol: "acme-tls/1",
+      alpnPort: 443,
+      provisionCertPem: forge.pki.certificateToPem(cert),
+      provisionKeyPem: forge.pki.privateKeyToPem(keys.privateKey),
+      instructions:
+        `Install the provisioning certificate on your server on port 443 with ALPN protocol "acme-tls/1", ` +
+        `restart the server, then click Verify Now. Remove it after verification succeeds.`,
     };
   } else {
     throw Object.assign(new Error("Unsupported challenge method"), { status: 400 });
@@ -88,24 +149,33 @@ async function getChallengeById(id) {
 async function verifyDnsChallenge(challenge) {
   let records;
   try {
-    records = await dns.resolveTxt(challenge.recordName);
+    records = await Promise.race([
+      dns.resolveTxt(challenge.recordName),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("DNS lookup timed out")), DNS_TIMEOUT_MS)
+      ),
+    ]);
   } catch (err) {
-    if (err.code === "ENOTFOUND" || err.code === "ENODATA" || err.code === "ESERVFAIL") {
+    if (
+      err.code === "ENOTFOUND" ||
+      err.code === "ENODATA" ||
+      err.code === "ESERVFAIL" ||
+      err.code === "ETIMEOUT"
+    ) {
       throw Object.assign(
         new Error(
           `No TXT record found at "${challenge.recordName}". ` +
-          `Add the record and wait 5-30 minutes for DNS propagation.`
+            `Add the record and wait 5–30 minutes for DNS propagation.`
         ),
         { status: 400, code: "DNS_NOT_FOUND" }
       );
     }
-    throw Object.assign(
-      new Error(`DNS lookup failed: ${err.message}`),
-      { status: 400, code: "DNS_ERROR" }
-    );
+    throw Object.assign(new Error(`DNS lookup failed: ${err.message}`), {
+      status: 400,
+      code: "DNS_ERROR",
+    });
   }
 
-  // TXT records come back as arrays of string chunks
   const flat = records.map((chunks) => chunks.join("").trim());
   const matched = flat.some((r) => r === challenge.token);
 
@@ -124,14 +194,21 @@ async function verifyDnsChallenge(challenge) {
    HTTP-01 VERIFICATION
    ========================================================== */
 
-function fetchUrl(url, timeoutMs = 10000) {
+function fetchUrl(url, timeoutMs = HTTP_TIMEOUT_MS, redirectsLeft = 3) {
   return new Promise((resolve, reject) => {
     const lib = url.startsWith("https") ? https : http;
     const req = lib.get(url, { timeout: timeoutMs }, (res) => {
-      // Follow one redirect
-      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+      if (
+        res.statusCode >= 300 &&
+        res.statusCode < 400 &&
+        res.headers.location &&
+        redirectsLeft > 0
+      ) {
         res.resume();
-        return fetchUrl(res.headers.location, timeoutMs).then(resolve, reject);
+        const next = res.headers.location.startsWith("http")
+          ? res.headers.location
+          : new URL(res.headers.location, url).toString();
+        return fetchUrl(next, timeoutMs, redirectsLeft - 1).then(resolve, reject);
       }
       let data = "";
       res.on("data", (chunk) => { data += chunk; });
@@ -139,7 +216,7 @@ function fetchUrl(url, timeoutMs = 10000) {
     });
     req.on("timeout", () => {
       req.destroy();
-      reject(new Error("Request timed out after 10 seconds"));
+      reject(new Error(`Request timed out after ${timeoutMs}ms`));
     });
     req.on("error", reject);
   });
@@ -153,7 +230,7 @@ async function verifyHttpChallenge(challenge) {
     throw Object.assign(
       new Error(
         `Could not fetch ${challenge.fileUrl}: ${err.message}. ` +
-        `Make sure the file exists and your server is publicly accessible on port 80.`
+          `Make sure the file exists and your server is publicly accessible on port 80.`
       ),
       { status: 400, code: "HTTP_FETCH_FAILED" }
     );
@@ -177,6 +254,101 @@ async function verifyHttpChallenge(challenge) {
 }
 
 /* ==========================================================
+   TLS-ALPN-01 VERIFICATION
+   ========================================================== */
+
+async function verifyTlsAlpnChallenge(challenge) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const done = (fn, arg) => {
+      if (settled) return;
+      settled = true;
+      fn(arg);
+    };
+
+    const socket = tls.connect(
+      {
+        host: challenge.domain,
+        port: challenge.alpnPort || 443,
+        servername: challenge.domain,
+        ALPNProtocols: [challenge.alpnProtocol || "acme-tls/1"],
+        rejectUnauthorized: false,
+        timeout: TLS_TIMEOUT_MS,
+      },
+      () => {
+        const alpn = socket.alpnProtocol;
+        const peerCert = socket.getPeerCertificate(true);
+        socket.end();
+
+        if (alpn !== (challenge.alpnProtocol || "acme-tls/1")) {
+          return done(
+            reject,
+            Object.assign(
+              new Error(
+                `ALPN negotiation failed. Server returned "${alpn || "(none)"}" instead of "${challenge.alpnProtocol}". ` +
+                  `Make sure your server is configured to accept the acme-tls/1 protocol.`
+              ),
+              { status: 400, code: "ALPN_MISMATCH" }
+            )
+          );
+        }
+
+        if (!peerCert || !peerCert.raw) {
+          return done(
+            reject,
+            Object.assign(new Error("Server did not present a TLS certificate"), {
+              status: 400,
+              code: "NO_CERT",
+            })
+          );
+        }
+
+        const der = Buffer.from(peerCert.raw);
+        const tokenBuf = Buffer.from(challenge.token, "utf8");
+        if (der.indexOf(tokenBuf) === -1) {
+          return done(
+            reject,
+            Object.assign(
+              new Error(
+                "acmeIdentifier extension not found in the served certificate. " +
+                  "Make sure you installed the provisioning certificate provided below."
+              ),
+              { status: 400, code: "TLS_TOKEN_MISMATCH" }
+            )
+          );
+        }
+
+        done(resolve);
+      }
+    );
+
+    socket.on("error", (err) => {
+      done(
+        reject,
+        Object.assign(
+          new Error(
+            `TLS connection to ${challenge.domain}:${challenge.alpnPort || 443} failed: ${err.message}. ` +
+              `Make sure your server is publicly accessible on port 443.`
+          ),
+          { status: 400, code: "TLS_ERROR" }
+        )
+      );
+    });
+
+    socket.on("timeout", () => {
+      socket.destroy();
+      done(
+        reject,
+        Object.assign(new Error("TLS connection timed out"), {
+          status: 400,
+          code: "TLS_TIMEOUT",
+        })
+      );
+    });
+  });
+}
+
+/* ==========================================================
    VERIFY (main entry)
    ========================================================== */
 
@@ -191,21 +363,23 @@ async function verifyChallenge(id) {
       { status: 410 }
     );
   }
-  if (challenge.status === "used") {
+  if (challenge.status === ChallengeStatus.USED) {
     throw Object.assign(
       new Error("This challenge has already been used to issue a certificate."),
       { status: 409 }
     );
   }
-  if (challenge.status === "verified") {
+  if (challenge.status === ChallengeStatus.VERIFIED) {
     return challenge;
   }
 
   try {
-    if (challenge.method === "dns-01") {
+    if (challenge.method === ChallengeMethod.DNS_01) {
       await verifyDnsChallenge(challenge);
-    } else if (challenge.method === "http-01") {
+    } else if (challenge.method === ChallengeMethod.HTTP_01) {
       await verifyHttpChallenge(challenge);
+    } else if (challenge.method === ChallengeMethod.TLS_ALPN_01) {
+      await verifyTlsAlpnChallenge(challenge);
     } else {
       throw Object.assign(new Error("Unsupported challenge method"), { status: 400 });
     }
@@ -220,7 +394,7 @@ async function verifyChallenge(id) {
 
   const verifiedAt = new Date().toISOString();
   await getDb().collection(COLLECTIONS.challenges).doc(id).update({
-    status: "verified",
+    status: ChallengeStatus.VERIFIED,
     verifiedAt,
     attempts: (challenge.attempts || 0) + 1,
     lastError: null,
@@ -233,12 +407,12 @@ async function verifyChallenge(id) {
     method: challenge.method,
   });
 
-  return { ...challenge, status: "verified", verifiedAt };
+  return { ...challenge, status: ChallengeStatus.VERIFIED, verifiedAt };
 }
 
 async function markChallengeUsed(id) {
   await getDb().collection(COLLECTIONS.challenges).doc(id).update({
-    status: "used",
+    status: ChallengeStatus.USED,
     usedAt: new Date().toISOString(),
   });
 }
