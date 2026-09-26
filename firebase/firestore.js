@@ -39,6 +39,7 @@ const COLLECTIONS = Object.freeze({
   revocations: "revocations",
   audit_logs: "audit_logs",
   system: "system",
+  challenges: "challenges",
 });
 
 module.exports = { initFirestore, getDb, COLLECTIONS };
