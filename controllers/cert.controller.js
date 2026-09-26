@@ -7,14 +7,128 @@ const {
   getJsonPayload,
   verifyCertificateObject,
 } = require("../services/certService");
+const {
+  createChallenge,
+  getChallengeById,
+  verifyChallenge,
+  markChallengeUsed,
+} = require("../services/challengeService");
 const { getRootCA } = require("../services/caService");
 const { logAction } = require("../services/auditService");
 const { AuditAction } = require("../models/schemas");
+const { logger } = require("../utils/logger");
+
+/* ==========================================================
+   STEP 1: REQUEST CERT → CREATE CHALLENGE
+   ========================================================== */
 
 async function requestCert(req, res, next) {
   try {
     const { owner, project, domain, email } = req.validated;
-    const cert = await issueNewCertificate({ owner, project, domain, email });
+    const method = String(req.body.method || "dns-01").toLowerCase();
+
+    const challenge = await createChallenge({
+      owner,
+      project,
+      domain,
+      email,
+      method,
+    });
+
+    await logAction({
+      action: "CHALLENGE_CREATED",
+      actor: "public",
+      target: challenge.id,
+      ip: req.ip,
+      userAgent: req.headers["user-agent"],
+      success: true,
+      meta: { domain, method },
+    });
+
+    const response = {
+      valid: true,
+      status: "challenge_pending",
+      message: challenge.instructions,
+      challenge: {
+        id: challenge.id,
+        domain: challenge.domain,
+        method: challenge.method,
+        token: challenge.token,
+        status: challenge.status,
+        expiresAt: challenge.expiresAt,
+        verifyUrl: `/api/verify-challenge/${challenge.id}`,
+        statusUrl: `/api/challenge/${challenge.id}`,
+      },
+    };
+
+    if (method === "dns-01") {
+      response.challenge.dns = {
+        type: "TXT",
+        name: challenge.recordName,
+        value: challenge.recordValue,
+        ttl: 300,
+      };
+    } else if (method === "http-01") {
+      response.challenge.http = {
+        url: challenge.fileUrl,
+        path: challenge.filePath,
+        content: challenge.fileContent,
+      };
+    }
+
+    res.status(202).json(response);
+  } catch (err) {
+    next(err);
+  }
+}
+
+/* ==========================================================
+   STEP 2: GET CHALLENGE STATUS
+   ========================================================== */
+
+async function getChallengeStatus(req, res, next) {
+  try {
+    const challenge = await getChallengeById(req.params.id);
+    if (!challenge) {
+      return res.status(404).json({ valid: false, error: "Challenge not found" });
+    }
+
+    res.json({
+      valid: true,
+      challenge: {
+        id: challenge.id,
+        domain: challenge.domain,
+        method: challenge.method,
+        status: challenge.status,
+        attempts: challenge.attempts || 0,
+        lastError: challenge.lastError || null,
+        createdAt: challenge.createdAt,
+        expiresAt: challenge.expiresAt,
+        verifiedAt: challenge.verifiedAt || null,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/* ==========================================================
+   STEP 3: VERIFY CHALLENGE AND ISSUE CERTIFICATE
+   ========================================================== */
+
+async function verifyChallengeAndIssue(req, res, next) {
+  try {
+    const challenge = await verifyChallenge(req.params.id);
+
+    // Issue the certificate
+    const cert = await issueNewCertificate({
+      owner: challenge.owner,
+      project: challenge.project,
+      domain: challenge.domain,
+      email: challenge.email,
+    });
+
+    await markChallengeUsed(challenge.id);
 
     await logAction({
       action: AuditAction.CERT_CREATED,
@@ -23,11 +137,17 @@ async function requestCert(req, res, next) {
       ip: req.ip,
       userAgent: req.headers["user-agent"],
       success: true,
-      meta: { domain, email },
+      meta: {
+        domain: challenge.domain,
+        email: challenge.email,
+        challengeId: challenge.id,
+        method: challenge.method,
+      },
     });
 
     res.status(201).json({
       valid: true,
+      status: "issued",
       certificate: cert.jsonPayload,
       downloadUrl: `/api/cert/${cert.certId}`,
       jsonUrl: `/api/cert/${cert.certId}/json`,
@@ -36,6 +156,10 @@ async function requestCert(req, res, next) {
     next(err);
   }
 }
+
+/* ==========================================================
+   VERIFY EXISTING CERTIFICATE
+   ========================================================== */
 
 async function verifyCert(req, res, next) {
   try {
@@ -57,6 +181,10 @@ async function verifyCert(req, res, next) {
     next(err);
   }
 }
+
+/* ==========================================================
+   STATUS / DOWNLOAD / ROOT CA
+   ========================================================== */
 
 async function statusCert(req, res, next) {
   try {
@@ -119,7 +247,6 @@ async function downloadCertJson(req, res, next) {
   try {
     const certId = req.certId;
     const json = await getJsonPayload(certId);
-
     res.setHeader("Content-Type", "application/json");
     res.setHeader("Content-Disposition", `attachment; filename="${certId}.json"`);
     res.setHeader("Cache-Control", "private, no-store");
@@ -179,6 +306,8 @@ async function publicCertLookup(req, res, next) {
 
 module.exports = {
   requestCert,
+  getChallengeStatus,
+  verifyChallengeAndIssue,
   verifyCert,
   statusCert,
   downloadCert,
