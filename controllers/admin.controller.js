@@ -7,9 +7,18 @@ const {
   revokeCertificate,
   deleteCertificate,
 } = require("../services/certService");
+const {
+  addVerifiedDomain,
+  removeVerifiedDomain,
+  listVerifiedDomains,
+} = require("../services/verifiedDomainService");
 const { getLogs, logAction } = require("../services/auditService");
 const { AuditAction } = require("../models/schemas");
 const { CERT_ID_RE } = require("../utils/helpers");
+
+/* ==========================================================
+   AUTH
+   ========================================================== */
 
 async function adminLogin(req, res, next) {
   try {
@@ -41,6 +50,10 @@ async function adminLogin(req, res, next) {
     next(err);
   }
 }
+
+/* ==========================================================
+   ROOT CA
+   ========================================================== */
 
 async function createRootCA(req, res, next) {
   try {
@@ -100,13 +113,16 @@ async function getRootCAInfo(req, res, next) {
   }
 }
 
+/* ==========================================================
+   CERTIFICATE MANAGEMENT
+   ========================================================== */
+
 async function listAllCertificates(req, res, next) {
   try {
     const limit = Math.min(Number(req.query.limit) || 100, 500);
     const offset = Math.max(Number(req.query.offset) || 0, 0);
     const items = await listCertificates({ limit, offset });
 
-    // Admin view omits PEM / public key blobs by default to keep the payload small.
     const certificates = items.map((c) => ({
       certId: c.certId,
       serialNumber: c.serialNumber,
@@ -175,6 +191,67 @@ async function deleteCert(req, res, next) {
   }
 }
 
+/* ==========================================================
+   PRE-VERIFIED DOMAINS
+   ========================================================== */
+
+async function listVerifiedDomainsHandler(req, res, next) {
+  try {
+    const domains = await listVerifiedDomains();
+    res.json({ valid: true, count: domains.length, domains });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function addVerifiedDomainHandler(req, res, next) {
+  try {
+    const pattern = String(req.body.pattern || "").trim().toLowerCase();
+    if (!pattern || pattern.length > 200) {
+      return res.status(400).json({ valid: false, error: "pattern is required (max 200 chars)" });
+    }
+    const record = await addVerifiedDomain({ pattern, createdBy: req.user.email });
+
+    await logAction({
+      action: AuditAction.VERIFIED_DOMAIN_ADDED,
+      actor: req.user.email,
+      target: record.id,
+      ip: req.ip,
+      userAgent: req.headers["user-agent"],
+      success: true,
+      meta: { pattern },
+    });
+
+    res.status(201).json({ valid: true, domain: record });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function removeVerifiedDomainHandler(req, res, next) {
+  try {
+    const id = String(req.params.id || "");
+    await removeVerifiedDomain(id);
+
+    await logAction({
+      action: AuditAction.VERIFIED_DOMAIN_REMOVED,
+      actor: req.user.email,
+      target: id,
+      ip: req.ip,
+      userAgent: req.headers["user-agent"],
+      success: true,
+    });
+
+    res.json({ valid: true });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/* ==========================================================
+   AUDIT LOGS
+   ========================================================== */
+
 async function auditLogs(req, res, next) {
   try {
     const limit = Math.min(Number(req.query.limit) || 100, 500);
@@ -195,5 +272,8 @@ module.exports = {
   listAllCertificates,
   revokeCert,
   deleteCert,
+  listVerifiedDomainsHandler,
+  addVerifiedDomainHandler,
+  removeVerifiedDomainHandler,
   auditLogs,
 };
