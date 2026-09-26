@@ -1,0 +1,2 @@
+# Keeps the certificates/ directory in git.
+# Certificate PEM/JSON files are stored in Firebase Storage, not here.
