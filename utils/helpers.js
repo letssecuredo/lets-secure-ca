@@ -10,8 +10,21 @@ function addDays(date, days) {
   return d;
 }
 
+/**
+ * Domain regex — accepts:
+ *   example.com
+ *   sub.example.com
+ *   *.example.com          ← wildcard
+ *   *.sub.example.com      ← wildcard subdomain
+ *
+ * Rejects:
+ *   - anything with `..`
+ *   - labels longer than 63 chars
+ *   - leading/trailing hyphens in labels
+ *   - missing TLD
+ */
 const DOMAIN_RE =
-  /^(?!-)(?:[a-zA-Z0-9\u00a1-\uffff](?:[a-zA-Z0-9\u00a1-\uffff-]{0,61}[a-zA-Z0-9\u00a1-\uffff])?\.)+[a-zA-Z\u00a1-\uffff]{2,}$/;
+  /^(?:\*\.)?(?!-)(?:[a-zA-Z0-9\u00a1-\uffff](?:[a-zA-Z0-9\u00a1-\uffff-]{0,61}[a-zA-Z0-9\u00a1-\uffff])?\.)+[a-zA-Z\u00a1-\uffff]{2,}$/;
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 const CERT_ID_RE = /^LS-[A-F0-9]{8}$/;
