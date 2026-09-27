@@ -4,6 +4,8 @@ const express = require("express");
 const router = express.Router();
 
 const { issueLimiter } = require("../middleware/rateLimitMiddleware");
+const { authMiddleware } = require("../middleware/authMiddleware");
+const { adminMiddleware } = require("../middleware/adminMiddleware");
 const {
   validateRequestCert,
   validateVerifyCert,
@@ -21,6 +23,8 @@ const {
   verifyCert,
   statusCert,
   downloadCert,
+  downloadFullchain,
+  downloadPrivateKey,
   downloadCertJson,
   rootCertPublic,
   publicCertLookup,
@@ -31,36 +35,42 @@ const { getCertificateByDomain } = require("../services/certService");
    DOMAIN VERIFICATION FLOW
    ========================================================== */
 
-// Step 1: Request a certificate → returns a challenge (or auto-issues if pre-verified)
 router.post("/request-cert", issueLimiter, validateRequestCert, requestCert);
-
-// Step 2: Poll challenge status
 router.get("/challenge/:id", validateChallengeIdParam, getChallengeStatus);
-
-// Step 3: Verify challenge → issue certificate
 router.post("/verify-challenge/:id", validateChallengeIdParam, verifyChallengeAndIssue);
 
 // TLS-ALPN-01 provisioning files
-router.get(
-  "/challenge/:id/provision-cert",
-  validateChallengeIdParam,
-  downloadProvisioningCert
-);
-router.get(
-  "/challenge/:id/provision-key",
-  validateChallengeIdParam,
-  downloadProvisioningKey
-);
+router.get("/challenge/:id/provision-cert", validateChallengeIdParam, downloadProvisioningCert);
+router.get("/challenge/:id/provision-key", validateChallengeIdParam, downloadProvisioningKey);
 
 /* ==========================================================
-   CERTIFICATE OPERATIONS
+   CERTIFICATE OPERATIONS (public material)
    ========================================================== */
 
 router.post("/verify-cert", validateVerifyCert, verifyCert);
 router.get("/status/:id", validateCertIdParam, statusCert);
 router.get("/cert/:id", validateCertIdParam, downloadCert);
+router.get("/cert/:id/fullchain", validateCertIdParam, downloadFullchain);
 router.get("/cert/:id/json", validateCertIdParam, downloadCertJson);
 router.get("/root-ca.pem", rootCertPublic);
+
+/* ==========================================================
+   PRIVATE KEY DOWNLOAD (admin-only)
+   ==========================================================
+   The private key is encrypted at rest. This endpoint decrypts it
+   in-memory and streams it. It requires BOTH:
+     - a valid admin JWT (authMiddleware)
+     - admin role         (adminMiddleware)
+   Every call is audit-logged.
+   ========================================================== */
+
+router.get(
+  "/cert/:id/key",
+  validateCertIdParam,
+  authMiddleware,
+  adminMiddleware,
+  downloadPrivateKey
+);
 
 /* ==========================================================
    FRONTEND-COMPATIBLE ALIASES
