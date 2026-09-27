@@ -12,6 +12,8 @@ const {
   issueCertificate,
   verifyCertificateSignature,
   pemToCert,
+  encryptSecret,
+  decryptSecret,
 } = require("../utils/crypto");
 const { loadCAPrivateKeyPem, loadCACertPem } = require("./caService");
 const { nowIso, addDays, CERT_ID_RE } = require("../utils/helpers");
@@ -34,10 +36,30 @@ async function generateUniqueCertId() {
   throw new Error("Could not generate a unique certificate ID");
 }
 
+function requireMasterKey() {
+  const key = process.env.MASTER_ENCRYPTION_KEY;
+  if (!key || key.length !== 64) {
+    const err = new Error(
+      "MASTER_ENCRYPTION_KEY is not configured (must be 64 hex chars)"
+    );
+    err.status = 500;
+    throw err;
+  }
+  return key;
+}
+
 /* ==========================================================
    ISSUE
    ========================================================== */
 
+/**
+ * Issues a leaf certificate, encrypts its private key with the master key,
+ * and persists both the public and encrypted-private material to Firestore.
+ *
+ * Returns { record, privateKeyPem } — privateKeyPem is a ONE-TIME value
+ * returned to the caller for immediate download. It is never stored in
+ * plaintext and never returned in subsequent API calls.
+ */
 async function issueNewCertificate({ owner, project, domain, email }) {
   const caPrivPem = await loadCAPrivateKeyPem();
   const caCertPem = await loadCACertPem();
@@ -54,7 +76,11 @@ async function issueNewCertificate({ owner, project, domain, email }) {
   const issuedAt = nowIso();
   const expiresAt = addDays(new Date(), VALIDITY_DAYS).toISOString();
 
-  // Public JSON payload — deliberately excludes any private key material.
+  // Encrypt leaf private key with master key (same pattern as Root CA)
+  const masterKey = requireMasterKey();
+  const encryptedPrivateKey = encryptSecret(issued.privateKeyPem, masterKey);
+
+  // Public JSON payload — deliberately excludes any private key material
   const jsonPayload = {
     certId,
     serialNumber: issued.serialNumber,
@@ -85,19 +111,22 @@ async function issueNewCertificate({ owner, project, domain, email }) {
     fingerprint: issued.fingerprint,
     leafCertPem: issued.certPem,
     caCertPem,
+    encryptedPrivateKey, // ← persisted, AES-256-GCM encrypted
     jsonPayload,
   });
 
-  // Single write — everything lives in one Firestore document.
+  // Single write — everything lives in one Firestore document
   await getDb().collection(COLLECTIONS.certificates).doc(certId).set(record);
 
   logger.info("Certificate issued", {
     certId,
     domain,
     serial: record.serialNumber,
+    hasEncryptedKey: !!encryptedPrivateKey,
   });
 
-  return record;
+  // Return the record + the plaintext PEM for one-time download
+  return { record, privateKeyPem: issued.privateKeyPem };
 }
 
 /* ==========================================================
@@ -146,6 +175,46 @@ async function getPem(certId) {
   return cert.leafCertPem;
 }
 
+/**
+ * Returns the decrypted leaf private key PEM.
+ * Must be called only from an admin-authenticated endpoint.
+ */
+async function getPrivateKeyPem(certId) {
+  const cert = await getCertificate(certId);
+  if (!cert) {
+    const err = new Error("Certificate not found");
+    err.status = 404;
+    throw err;
+  }
+  if (!cert.encryptedPrivateKey) {
+    const err = new Error(
+      "Private key not available for this certificate. " +
+        "It may have been issued before encryption-at-rest was enabled."
+    );
+    err.status = 410;
+    throw err;
+  }
+
+  const masterKey = requireMasterKey();
+  try {
+    return decryptSecret(cert.encryptedPrivateKey, masterKey);
+  } catch (e) {
+    logger.error("Private key decryption failed", {
+      certId,
+      error: e.message,
+    });
+    const err = new Error(
+      "Private key could not be decrypted. MASTER_ENCRYPTION_KEY may have changed."
+    );
+    err.status = 500;
+    throw err;
+  }
+}
+
+/**
+ * Returns the certificate metadata as a JSON-safe object.
+ * Never includes private key material.
+ */
 async function getJsonPayload(certId) {
   const cert = await getCertificate(certId);
   if (!cert) {
@@ -153,7 +222,7 @@ async function getJsonPayload(certId) {
     err.status = 404;
     throw err;
   }
-  // Fall back to reconstructing from the document if jsonPayload is missing.
+
   if (cert.jsonPayload) return cert.jsonPayload;
 
   return {
@@ -171,6 +240,20 @@ async function getJsonPayload(certId) {
     algorithm: cert.algorithm,
     keySize: cert.keySize,
   };
+}
+
+/**
+ * Returns a combined fullchain PEM: leaf + CA (for Nginx/Apache).
+ */
+async function getFullchainPem(certId) {
+  const cert = await getCertificate(certId);
+  if (!cert || !cert.leafCertPem) {
+    const err = new Error("Certificate PEM not found");
+    err.status = 404;
+    throw err;
+  }
+  const ca = cert.caCertPem || (await loadCACertPem());
+  return cert.leafCertPem.trim() + "\n" + ca.trim() + "\n";
 }
 
 /* ==========================================================
@@ -212,7 +295,12 @@ async function revokeCertificate(certId, reason) {
 
   logger.info("Certificate revoked", { certId, reason: safeReason });
 
-  return { ...cert, status: CertStatus.REVOKED, revokedAt, revocationReason: safeReason };
+  return {
+    ...cert,
+    status: CertStatus.REVOKED,
+    revokedAt,
+    revocationReason: safeReason,
+  };
 }
 
 /* ==========================================================
@@ -228,8 +316,8 @@ async function deleteCertificate(certId) {
   }
 
   await getDb().collection(COLLECTIONS.certificates).doc(certId).delete();
-
   // Revocation record (if any) is intentionally retained for audit purposes.
+
   logger.info("Certificate deleted", { certId });
   return true;
 }
@@ -314,6 +402,8 @@ module.exports = {
   getCertificateByDomain,
   listCertificates,
   getPem,
+  getPrivateKeyPem,
+  getFullchainPem,
   getJsonPayload,
   revokeCertificate,
   deleteCertificate,
