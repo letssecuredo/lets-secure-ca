@@ -1,6 +1,6 @@
 # Let-S Secure — Backend API (Private Certificate Authority)
 
-Production-ready Node.js + Express backend for the Let-S Secure Private Certificate Authority. Handles certificate issuance, domain verification, revocation, key management, and admin operations — all backed by Firebase Firestore.
+Production-ready Node.js + Express backend for the Let-S Secure **Private Certificate Authority**. Handles certificate issuance, domain verification, revocation, private key management, and admin operations — all backed by Firebase Firestore.
 
 > ⚠️ **Private CA only.** Certificates issued by this service are NOT trusted by browsers. They are valid only on systems that have installed the Let-S Secure Root CA.
 
@@ -26,9 +26,8 @@ Production-ready Node.js + Express backend for the Let-S Secure Private Certific
 - [Private Key Handling](#-private-key-handling)
 - [Domain Verification](#-domain-verification)
 - [Security Model](#-security-model)
-- [Deployment](#-deployment)
+- [Deployment on Render](#-deployment-on-render)
 - [Troubleshooting](#-troubleshooting)
-- [Design Decisions](#-design-decisions)
 - [Changelog](#-changelog)
 - [License](#license)
 
@@ -41,12 +40,9 @@ This is the **backend API** for Let-S Secure. It provides:
 - Root CA generation and secure storage
 - Leaf certificate issuance via 4 verification methods
 - Certificate verification, revocation, and deletion
-- Encrypted private key persistence (leaf + root)
+- AES-256-GCM encrypted private key persistence
 - Admin authentication and management APIs
 - Immutable audit logging
-- Optional merchant platform (payment links, invoices, webhooks)
-
-The frontend (separate repository) is served from GitHub Pages and communicates with this API over HTTPS.
 
 **Frontend repo:** https://github.com/letssecuredo/lets-secure
 
@@ -101,12 +97,6 @@ The frontend (separate repository) is served from GitHub Pages and communicates 
 - Input validation on every endpoint
 - Firestore rules block all client access
 
-### Merchant Platform (Optional)
-- Payment links, invoices, subscriptions
-- API keys with SHA-256 hashing
-- Signed webhooks with retry
-- Settlement to merchant wallet
-
 ---
 
 ## 🧱 Tech Stack
@@ -127,92 +117,49 @@ The frontend (separate repository) is served from GitHub Pages and communicates 
 
 ```
 lets-secure-ca/
-├── server.js
-├── package.json
-├── .env.example
+├── server.js                        Express app entry point
+├── package.json                     Dependencies
+├── .env.example                     Environment template
 ├── .gitignore
-├── README.md
+├── README.md                        This file
 │
 ├── firebase/
-│   └── firestore.js
+│   └── firestore.js                 Firebase Admin SDK init
 │
 ├── routes/
-│   ├── index.js
-│   ├── admin.routes.js
-│   ├── cert.routes.js
-│   ├── merchant/
-│   │   ├── index.js
-│   │   ├── onboarding.routes.js
-│   │   ├── paymentLinks.routes.js
-│   │   ├── invoices.routes.js
-│   │   ├── payments.routes.js
-│   │   ├── refunds.routes.js
-│   │   ├── customers.routes.js
-│   │   ├── apiKeys.routes.js
-│   │   ├── webhooks.routes.js
-│   │   ├── analytics.routes.js
-│   │   └── settlements.routes.js
-│   ├── public/
-│   │   ├── checkout.routes.js
-│   │   └── shortLink.routes.js
-│   └── v1/
-│       ├── index.js
-│       ├── payments.routes.js
-│       └── paymentLinks.routes.js
+│   ├── index.js                     Route aggregator + health
+│   ├── admin.routes.js              Admin endpoints
+│   └── cert.routes.js               Certificate endpoints
 │
 ├── controllers/
-│   ├── admin.controller.js
-│   ├── cert.controller.js
-│   ├── auth.controller.js
-│   ├── merchant/
-│   │   └── ...
-│   └── public/
-│       └── checkout.controller.js
+│   ├── admin.controller.js          Admin logic
+│   └── cert.controller.js           Certificate logic
 │
 ├── middleware/
-│   ├── authMiddleware.js
-│   ├── adminMiddleware.js
-│   ├── merchantMiddleware.js
-│   ├── apiKeyMiddleware.js
-│   ├── rateLimitMiddleware.js
-│   ├── validationMiddleware.js
-│   ├── idempotencyMiddleware.js
-│   └── errorMiddleware.js
+│   ├── authMiddleware.js            JWT verification
+│   ├── adminMiddleware.js           Role check
+│   ├── errorMiddleware.js           404 + error handler
+│   ├── rateLimitMiddleware.js       Global + auth + issuance limits
+│   └── validationMiddleware.js      Input schemas
 │
 ├── services/
-│   ├── authService.js
-│   ├── caService.js
-│   ├── certService.js
-│   ├── challengeService.js
-│   ├── verifiedDomainService.js
-│   ├── auditService.js
-│   ├── merchantService.js
-│   ├── paymentService.js
-│   ├── paymentLinkService.js
-│   ├── invoiceService.js
-│   ├── refundService.js
-│   ├── settlementService.js
-│   ├── webhookService.js
-│   ├── apiKeyService.js
-│   ├── customerService.js
-│   └── analyticsService.js
-│
-├── workers/
-│   ├── webhookWorker.js
-│   ├── settlementWorker.js
-│   ├── subscriptionWorker.js
-│   └── cleanupWorker.js
+│   ├── authService.js               Login + admin bootstrap
+│   ├── caService.js                 Root CA generation & storage
+│   ├── certService.js               Leaf issuance, key encryption
+│   ├── challengeService.js          DNS / HTTP / TLS-ALPN verification
+│   ├── verifiedDomainService.js     Pre-verified patterns
+│   └── auditService.js              Immutable action log
 │
 ├── models/
-│   └── schemas.js
+│   └── schemas.js                   Firestore document shapes
 │
 ├── utils/
-│   ├── crypto.js
-│   ├── helpers.js
-│   └── logger.js
+│   ├── crypto.js                    X.509 + AES-256-GCM + scrypt
+│   ├── helpers.js                   Domain/email/ID regex, sanitize
+│   └── logger.js                    Structured logger + Morgan stream
 │
-├── certificates/.gitkeep
-└── logs/.gitkeep
+├── certificates/.gitkeep            Placeholder (no local certs)
+└── logs/.gitkeep                    Placeholder (logs go to stdout)
 ```
 
 ---
@@ -222,7 +169,6 @@ lets-secure-ca/
 ### Prerequisites
 - Node.js ≥ 18
 - Firebase project with Firestore
-- (Optional) Render account for deployment
 
 ### 1. Clone
 
@@ -304,7 +250,7 @@ service cloud.firestore {
 }
 ```
 
-All client access blocked. Only Admin SDK can read/write.
+All client access blocked. Only the Admin SDK (backend) can read/write.
 
 ### 5. Collections used
 
@@ -312,18 +258,11 @@ All client access blocked. Only Admin SDK can read/write.
 |---|---|
 | `certificates` | Leaf cert + **encrypted private key** + metadata |
 | `users` | Admin accounts (scrypt hashes) |
-| `revocations` | Revoked certificates |
+| `revocations` | Revoked certificate records |
 | `audit_logs` | Immutable action log |
-| `challenges` | Pending verification challenges |
-| `verified_domains` | Admin whitelist patterns |
+| `challenges` | Pending domain verification challenges |
+| `verified_domains` | Admin-whitelisted patterns |
 | `system` | Root CA (`root-ca` doc, encrypted) |
-| `merchants` | Merchant accounts |
-| `payments` | Payment records |
-| `invoices` | Invoices |
-| `refunds` | Refunds |
-| `customers` | Customer profiles |
-| `merchantApiKeys` | API keys (hashed) |
-| `merchantWebhookEvents` | Webhook delivery log |
 
 ---
 
@@ -336,16 +275,16 @@ Create `.env` (never commit it) based on `.env.example`.
 | `PORT` | HTTP port (`10000` on Render) |
 | `NODE_ENV` | `production` |
 | `LOG_LEVEL` | `error` \| `warn` \| `info` \| `debug` |
-| `CORS_ORIGINS` | Comma-separated allowlist |
-| `RATE_LIMIT_WINDOW_MS` | Global window (ms) |
-| `RATE_LIMIT_MAX` | Global max requests |
-| `AUTH_RATE_LIMIT_MAX` | Login attempts / 15 min |
-| `ISSUE_RATE_LIMIT_MAX` | Issuance / hour |
+| `CORS_ORIGINS` | Comma-separated allowlist of origins |
+| `RATE_LIMIT_WINDOW_MS` | Global rate-limit window (ms) |
+| `RATE_LIMIT_MAX` | Max requests per window (global) |
+| `AUTH_RATE_LIMIT_MAX` | Max login attempts per 15 min |
+| `ISSUE_RATE_LIMIT_MAX` | Max certificate issues per hour |
 | `JWT_SECRET` | 128 hex chars |
-| `JWT_EXPIRES_IN` | e.g., `12h` |
-| `MASTER_ENCRYPTION_KEY` | 64 hex chars |
-| `ADMIN_EMAIL` | First admin's email |
-| `ADMIN_PASSWORD` | First admin's password (min 8) |
+| `JWT_EXPIRES_IN` | e.g. `12h` |
+| `MASTER_ENCRYPTION_KEY` | 64 hex chars (encrypts Root CA + leaf keys) |
+| `ADMIN_EMAIL` | First admin's email (bootstrap) |
+| `ADMIN_PASSWORD` | First admin's password (min 8 chars) |
 | `FIREBASE_PROJECT_ID` | From service account JSON |
 | `FIREBASE_CLIENT_EMAIL` | From service account JSON |
 | `FIREBASE_PRIVATE_KEY` | From service account JSON |
@@ -376,15 +315,15 @@ https://lets-secure-ca.onrender.com
 | `GET` | `/` | Service metadata + endpoint index |
 | `GET` | `/healthz` | Liveness probe |
 
-### Domain Verification
+### Domain Verification Flow
 
 | Method | Path | Description |
 |---|---|---|
 | `POST` | `/api/request-cert` | Request cert → returns challenge |
 | `GET`  | `/api/challenge/:id` | Poll challenge status |
 | `POST` | `/api/verify-challenge/:id` | Verify → issue certificate |
-| `GET`  | `/api/challenge/:id/provision-cert` | TLS-ALPN-01 cert |
-| `GET`  | `/api/challenge/:id/provision-key` | TLS-ALPN-01 key |
+| `GET`  | `/api/challenge/:id/provision-cert` | Download TLS-ALPN-01 cert |
+| `GET`  | `/api/challenge/:id/provision-key` | Download TLS-ALPN-01 key |
 
 ### Certificate Operations
 
@@ -395,7 +334,7 @@ https://lets-secure-ca.onrender.com
 | `GET`  | `/api/cert/:id` | Download leaf PEM |
 | `GET`  | `/api/cert/:id/fullchain` | Leaf + CA bundle |
 | `GET`  | `/api/cert/:id/json` | JSON metadata |
-| `GET`  | `/api/root-ca.pem` | Root CA PEM |
+| `GET`  | `/api/root-ca.pem` | Root CA PEM (public) |
 
 ### Admin (JWT required)
 
@@ -405,24 +344,13 @@ https://lets-secure-ca.onrender.com
 | `POST`   | `/api/admin/create-root-ca` | Generate Root CA (once) |
 | `GET`    | `/api/admin/root-ca` | Root CA info |
 | `GET`    | `/api/admin/certificates` | List all certificates |
-| `POST`   | `/api/admin/revoke-cert` | Revoke |
-| `DELETE` | `/api/admin/certificate/:id` | Delete |
+| `POST`   | `/api/admin/revoke-cert` | Revoke a certificate |
+| `DELETE` | `/api/admin/certificate/:id` | Delete a certificate |
 | `GET`    | `/api/admin/certificate/:id/key` | **Download encrypted leaf key** |
-| `GET`    | `/api/admin/verified-domains` | List whitelist |
-| `POST`   | `/api/admin/verified-domains` | Add pattern |
+| `GET`    | `/api/admin/verified-domains` | List pre-verified patterns |
+| `POST`   | `/api/admin/verified-domains` | Add pre-verified pattern |
 | `DELETE` | `/api/admin/verified-domains/:id` | Remove pattern |
 | `GET`    | `/api/admin/audit-logs` | Paginated audit log |
-
-### Merchant API
-
-| Method | Path | Description |
-|---|---|---|
-| `POST` | `/api/merchant/apply` | Apply as merchant |
-| `POST` | `/api/v1/payments` | Create payment (API key) |
-| `POST` | `/api/merchant/payment-links` | Create link |
-| `POST` | `/api/merchant/invoices` | Create invoice |
-| `POST` | `/api/merchant/api-keys` | Generate key |
-| `PUT`  | `/api/merchant/webhooks/settings` | Configure webhook |
 
 ---
 
@@ -447,7 +375,7 @@ https://lets-secure-ca.onrender.com
    │         → Sign with Root CA
    │         → Store { leafCertPem, encryptedPrivateKey, metadata }
    │         → Return { certificate, privateKeyPem } (once)
-   └── NO  → Return error with hints
+   └── NO  → Return error with fix hints
         ↓
 7. User downloads cert + fullchain + key
 8. Install on server → valid for 365 days
@@ -476,13 +404,13 @@ Verification returns { valid: false, reason: "Certificate revoked" }
 | **Generation** | RSA-2048 inside `issueCertificate()` |
 | **Encryption** | AES-256-GCM with `MASTER_ENCRYPTION_KEY` |
 | **Storage** | `certificates/{certId}.encryptedPrivateKey` |
-| **First response** | Plaintext PEM returned **once** |
+| **First response** | Plaintext PEM returned **once** in API response |
 | **User download** | Saves `.key.pem` from browser |
 | **Admin recovery** | `GET /api/admin/certificate/:id/key` |
 | **Audit** | Every download logged as `CERT_KEY_DOWNLOADED` |
 | **Deletion** | Encrypted key deleted with certificate |
 
-### Response at issuance
+### Response at issuance (contains key ONCE)
 
 ```json
 {
@@ -539,12 +467,13 @@ Response:
       "name": "_letssecure-challenge.api.example.com",
       "value": "ls-verify-a3f8b2c9...",
       "ttl": 300
-    }
+    },
+    "expiresAt": "2025-01-15T11:30:00.000Z"
   }
 }
 ```
 
-**Add the TXT record**, wait for propagation, then verify:
+**Add the TXT record** to your DNS provider, wait for propagation, then verify:
 
 ```bash
 curl -X POST https://lets-secure-ca.onrender.com/api/verify-challenge/CH-4118E9875A0A
@@ -556,7 +485,7 @@ Place a file at `/.well-known/letssecure-challenge/<token>` with the exact token
 
 ### TLS-ALPN-01
 
-Install the provisioning cert on port 443 with ALPN `acme-tls/1`, then verify.
+Download the provisioning cert and key, install on port 443 with ALPN protocol `acme-tls/1`, then verify.
 
 ### Pre-verified
 
@@ -592,7 +521,6 @@ Admin whitelists a pattern → all matching domains skip the challenge.
 | Global | 300 / 15 min |
 | Login | 10 / 15 min |
 | Issuance | 30 / hour |
-| Merchant API | 100 / min per key |
 
 ### Firestore
 - Rules: `allow read, write: if false`
@@ -649,45 +577,22 @@ Click **Save, rebuild, and deploy** — goes live in 2–3 minutes.
 |---|---|---|
 | **CORS error** | Origin missing | Add to `CORS_ORIGINS` |
 | **"Root CA not initialized"** | Admin hasn't created it | Admin panel → Create Root CA |
-| **"Cannot find module"** | Filename typo | Verify `require()` paths |
+| **"Cannot find module"** | Filename typo | Verify `require()` paths match file names |
 | **"Server auth misconfigured"** | Wrong `JWT_SECRET` | Verify 128 hex chars |
 | **"MASTER_ENCRYPTION_KEY not configured"** | Wrong length | Must be 64 hex chars |
 | **Firebase credential error** | Real newlines in key | Keep literal `\n` |
 | **"Private key not available"** | Cert issued before encryption fix | Request new certificate |
 | **"Private key could not be decrypted"** | Master key changed | Restore original key |
-| **Cold start** | Render free tier | Wait 30–60s |
-| **"Challenge expired"** | > 1 hour old | Request new cert |
-| **"Token mismatch"** | Wrong TXT value | Copy exactly |
-
----
-
-## 🧠 Design Decisions
-
-### Why Firestore-only?
-- PEM files are tiny (~2 KB)
-- Atomic writes: metadata + PEM + key in one document
-- Fewer moving parts, one rule set, faster reads
-
-### Why encrypt private keys?
-- Consistency with Root CA pattern
-- Admin recovery if user loses key
-- Compromising Firestore alone is not enough
-
-### Why no email verification?
-- Domain verification is the authoritative proof
-- Email is metadata only
-- Public CAs deprecated WHOIS email verification
-
-### Why SHA-256 nonces?
-- Not for blockchain, but for replay prevention
-- Monotonic per wallet
+| **Cold start delays** | Render free tier | Wait 30–60s |
+| **"Challenge expired"** | > 1 hour old | Request new certificate |
+| **"Token mismatch"** | Wrong TXT value | Copy exactly, no extra spaces |
 
 ---
 
 ## 📝 Changelog
 
 ### v1.2.0 — Private key handling fix
-- **FIXED (critical):** Leaf private keys now encrypted + persisted
+- **FIXED (critical):** Leaf private keys now encrypted + persisted to Firestore
 - **NEW:** `privateKeyPem` returned once at issuance
 - **NEW:** Admin endpoint `GET /api/admin/certificate/:id/key`
 - **NEW:** Fullchain endpoint `GET /api/cert/:id/fullchain`
