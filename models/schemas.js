@@ -26,6 +26,7 @@ const AuditAction = Object.freeze({
   CERT_CREATED: "CERT_CREATED",
   CERT_VERIFIED: "CERT_VERIFIED",
   CERT_DOWNLOADED: "CERT_DOWNLOADED",
+  CERT_KEY_DOWNLOADED: "CERT_KEY_DOWNLOADED",
   CERT_REVOKED: "CERT_REVOKED",
   CERT_DELETED: "CERT_DELETED",
   CHALLENGE_CREATED: "CHALLENGE_CREATED",
@@ -36,6 +37,17 @@ const AuditAction = Object.freeze({
   VERIFIED_DOMAIN_REMOVED: "VERIFIED_DOMAIN_REMOVED",
 });
 
+/**
+ * certificates/{certId}
+ *
+ * Contains:
+ *   - Public certificate material (leafCertPem, caCertPem)
+ *   - Public metadata (jsonPayload)
+ *   - ENCRYPTED leaf private key (AES-256-GCM, same pattern as Root CA)
+ *
+ * The encrypted private key is never returned in jsonPayload and is only
+ * accessible via the admin-protected /api/cert/:id/key endpoint.
+ */
 function buildCertificateDocument(input) {
   return {
     certId: input.certId,
@@ -55,8 +67,16 @@ function buildCertificateDocument(input) {
     revocationReason: null,
     algorithm: "sha256WithRSA",
     keySize: 2048,
+
+    // Public certificate material
     leafCertPem: input.leafCertPem,
     caCertPem: input.caCertPem,
+
+    // Private key — encrypted at rest (AES-256-GCM)
+    // Never returned in jsonPayload; only via admin download endpoint
+    encryptedPrivateKey: input.encryptedPrivateKey || null,
+
+    // Public JSON blob (never contains private key)
     jsonPayload: input.jsonPayload,
   };
 }
