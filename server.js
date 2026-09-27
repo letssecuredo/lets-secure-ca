@@ -53,7 +53,8 @@ app.use(
     },
     credentials: true,
     methods: ["GET", "POST", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-Request-Id"],
+    exposedHeaders: ["X-Request-Id"],
     maxAge: 600,
   })
 );
@@ -67,15 +68,19 @@ app.use(compression());
 
 /* ---------- Request ID ---------- */
 app.use((req, res, next) => {
-  req.id = uuidv4();
+  req.id = req.headers["x-request-id"] || uuidv4();
   res.setHeader("X-Request-Id", req.id);
   next();
 });
 
-/* ---------- HTTP logging ---------- */
+/* ---------- HTTP logging ----------
+   NOTE: We set the request ID on the RESPONSE header, so Morgan must
+   read it from `:res[X-Request-Id]`, not `:req[X-Request-Id]`.
+   (Previously this was wrong — logged `rid=-` for every request.)
+*/
 app.use(
   morgan(
-    ':remote-addr - :method :url :status :res[content-length] - :response-time ms "rid=:req[X-Request-Id]"',
+    ':remote-addr - :method :url :status :res[content-length] - :response-time ms "rid=:res[X-Request-Id]"',
     { stream: morganStream }
   )
 );
@@ -118,3 +123,19 @@ process.on("uncaughtException", (err) => {
   logger.error("Uncaught exception", { error: err.message, stack: err.stack });
   process.exit(1);
 });
+
+/* ---------- Graceful shutdown ---------- */
+async function shutdown(signal) {
+  logger.info(`Received ${signal}, shutting down gracefully…`);
+  try {
+    // Give in-flight requests a moment
+    await new Promise((r) => setTimeout(r, 500));
+    process.exit(0);
+  } catch (err) {
+    logger.error("Shutdown error", { error: err.message });
+    process.exit(1);
+  }
+}
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
